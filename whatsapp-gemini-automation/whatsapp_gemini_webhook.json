@@ -1,0 +1,62 @@
+{
+  "name": "WhatsApp Gemini Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "whatsapp-gemini",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook - WhatsApp Input",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [100, 100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": [
+            {
+              "condition": "=",
+              "leftValue": "{{ $json.body.object }}",
+              "rightValue": "whatsapp_business_account"
+            }
+          ]
+        }
+      },
+      "id": "filter-webhook",
+      "name": "Validar Webhook Meta",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [300, 100]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "extract-message",
+      "name": "Extrair Mensagem",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [500, 100],
+      "typeVersion": 1,
+      "code": "const entry = $json.body.entry[0];\nconst messaging = entry.messaging[0];\nconst sender = messaging.sender.id;\nconst message = messaging.message?.text || '';\nconst mid = messaging.message.mid;\nconst timestamp = messaging.timestamp;\n\nreturn {\n  wa_id: sender,\n  message_text: message,\n  message_id: mid,\n  timestamp: new Date(timestamp * 1000).toISOString()\n};"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "fetch-history",
+      "name": "Buscar Histórico (10 msgs)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [700, 100],
+      "code": "// Simular busca de histórico do BigQuery\nconst history = [\n  { role: 'user', content: $json.message_text }\n];\nreturn { history };"
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "resource": "message",
+        "model": "{{ $env.GEMINI_MODEL }}",
+        "options": {\n          "temperature\": {{ $env.GEMINI_TEMPERATURE }},\n          \"maxTokens\": {{ $env.GEMINI_MAX_TOKENS }}\n        }\n      },\n      \"id\": \"gemini-response\",\n      \"name\": \"Google Gemini - Gerar Resposta\",\n      \"type\": \"n8n-nodes-ext.gemini\",\n      \"typeVersion\": 1,\n      \"position\": [900, 100],\n      \"parameterValues\": {\n        \"messages\": \"{{ $json.history }}\"\n      }\n    },\n    {\n      \"parameters\": {\n        \"method\": \"POST\",\n        \"url\": \"https://graph.instagram.com/v18.0/{{ $env.WHATSAPP_PHONE_NUMBER_ID }}/messages\",\n        \"authentication\": \"genericCredentialType\",\n        \"genericAuthType\": \"httpHeaderAuth\",\n        \"sendHeaders\": true,\n        \"headerParameters\": {\n          \"Authorization\": \"Bearer {{ $env.WHATSAPP_ACCESS_TOKEN }}\"\n        },\n        \"sendBody\": true,\n        \"body\": {\n          \"messaging_product\": \"whatsapp\",\n          \"to\": \"{{ $json.wa_id }}\",\n          \"type\": \"text\",\n          \"text\": {\n            \"body\": \"{{ $json.gemini_response }}\"\n          }\n        }\n      },\n      \"id\": \"send-whatsapp\",\n      \"name\": \"Enviar Resposta WhatsApp\",\n      \"type\": \"n8n-nodes-base.httpRequest\",\n      \"typeVersion\": 4.1,\n      \"position\": [1100, 100]\n    },\n    {\n      \"parameters\": {\n        \"operation\": \"insert\",\n        \"projectId\": \"{{ $env.GCP_PROJECT }}\",\n        \"datasetId\": \"{{ $env.GCP_DATASET }}\",\n        \"tableId\": \"messages\",\n        \"rows\": [\n          {\n            \"message_id\": \"{{ $json.message_id }}\",\n            \"wa_id\": \"{{ $json.wa_id }}\",\n            \"message_text\": \"{{ $json.message_text }}\",\n            \"direction\": \"inbound\",\n            \"gemini_response\": \"{{ $json.gemini_response }}\",\n            \"response_status\": \"success\",\n            \"received_at\": \"{{ $now.toISOString() }}\"\n          }\n        ]\n      },\n      \"id\": \"log-bigquery\",\n      \"name\": \"Registrar no BigQuery\",\n      \"type\": \"n8n-nodes-ext.bigQuery\",\n      \"typeVersion\": 1,\n      \"position\": [1300, 100]\n    },\n    {\n      \"parameters\": {\n        \"options\": {}\n      },\n      \"id\": \"respond-200\",\n      \"name\": \"Responder 200 OK\",\n      \"type\": \"n8n-nodes-base.respondToWebhook\",\n      \"typeVersion\": 1,\n      \"position\": [1500, 100],\n      \"statusCode\": 200\n    }\n  ],\n  \"connections\": {\n    \"webhook-trigger\": {\n      \"main\": [[{ \"node\": \"filter-webhook\", \"type\": \"main\", \"index\": 0 }]]\n    },\n    \"filter-webhook\": {\n      \"main\": [[{ \"node\": \"extract-message\", \"type\": \"main\", \"index\": 0 }]]\n    },\n    \"extract-message\": {\n      \"main\": [[{ \"node\": \"fetch-history\", \"type\": \"main\", \"index\": 0 }]]\n    },\n    \"fetch-history\": {\n      \"main\": [[{ \"node\": \"gemini-response\", \"type\": \"main\", \"index\": 0 }]]\n    },\n    \"gemini-response\": {\n      \"main\": [[{ \"node\": \"send-whatsapp\", \"type\": \"main\", \"index\": 0 }]]\n    },\n    \"send-whatsapp\": {\n      \"main\": [[{ \"node\": \"log-bigquery\", \"type\": \"main\", \"index\": 0 }]]\n    },\n    \"log-bigquery\": {\n      \"main\": [[{ \"node\": \"respond-200\", \"type\": \"main\", \"index\": 0 }]]\n    }\n  },\n  \"settings\": {\n    \"executionOrder\": \"v1\"\n  }\n}
